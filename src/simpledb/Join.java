@@ -5,6 +5,12 @@ import java.util.*;
  * The Join operator implements the relational join operation.
  */
 public class Join extends AbstractDbIterator {
+	private final JoinPredicate joinPredicate;
+	private final DbIterator dbIterator1;
+	private final DbIterator dbIterator2;
+	private final TupleDesc tupleDesc;
+	private Tuple tuple1;
+	private Tuple tuple2;
 
     /**
      * Constructor.  Accepts to children to join and the predicate
@@ -15,28 +21,40 @@ public class Join extends AbstractDbIterator {
      * @param child2 Iterator for the right(inner) relation to join
      */
     public Join(JoinPredicate p, DbIterator child1, DbIterator child2) {
-        // some code goes here
+    	this.joinPredicate = p;
+    	this.dbIterator1 = child1;
+    	this.dbIterator2 = child2;
+    	this.tupleDesc = TupleDesc.combine(child1.getTupleDesc(), child2.getTupleDesc());
     }
 
     /**
      * @see simpledb.TupleDesc#combine(TupleDesc, TupleDesc) for possible implementation logic.
      */
     public TupleDesc getTupleDesc() {
-        // some code goes here
-        return null;
+        return tupleDesc;
     }
 
     public void open()
         throws DbException, NoSuchElementException, TransactionAbortedException {
-        // some code goes here
+    	dbIterator1.open();
+    	dbIterator2.open();
+    	if (dbIterator1.hasNext()) tuple1 = dbIterator1.next();
+    	if (dbIterator2.hasNext()) tuple2 = dbIterator2.next();
     }
 
     public void close() {
-        // some code goes here
+    	super.close();
+    	dbIterator1.close();
+    	dbIterator2.close();
+    	tuple1 = null;
+    	tuple2 = null;
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
-        // some code goes here
+    	dbIterator1.rewind();
+    	dbIterator2.rewind();
+    	if (dbIterator1.hasNext()) tuple1 = dbIterator1.next();
+    	if (dbIterator2.hasNext()) tuple2 = dbIterator2.next();
     }
 
     /**
@@ -59,7 +77,31 @@ public class Join extends AbstractDbIterator {
      * @see JoinPredicate#filter
      */
     protected Tuple readNext() throws TransactionAbortedException, DbException {
-        // some code goes here
-        return null;
+    	if (tuple1 == null || tuple2 == null) return null;
+    	Tuple tuple = null;
+    	while (tuple == null && tuple1 != null && tuple2 != null) {
+    		if (joinPredicate.filter(tuple1, tuple2)) {
+    			tuple = new Tuple(tupleDesc);
+    		    int tuple1NumFileds = tuple1.getTupleDesc().numFields();
+    		    int tuple2NumFields = tuple2.getTupleDesc().numFields();
+    		    for (int i = 0; i < tuple1NumFileds; i++) {
+    		    	tuple.setField(i, tuple1.getField(i));
+    		    }
+    		    for (int i = 0; i < tuple2NumFields; i++) {
+    		    	tuple.setField(tuple1NumFileds + i, tuple2.getField(i));
+    		    }
+    		}
+    		if (!dbIterator1.hasNext() && !dbIterator2.hasNext()) {
+    			tuple1 = null;
+    			tuple2 = null;
+    		} else {
+    			if (!dbIterator2.hasNext()) {
+    				tuple1 = dbIterator1.next();
+    				dbIterator2.rewind();
+    			}
+    			tuple2 = dbIterator2.next();
+    		}
+    	}
+    	return tuple;
     }
 }

@@ -1,9 +1,17 @@
 package simpledb;
 
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.NoSuchElementException;
+
 /**
  * Knows how to compute some aggregate over a set of StringFields.
  */
 public class StringAggregator implements Aggregator {
+	private final Map<Field, Integer> count;
+	private final int gbfield;
+	private final TupleDesc tupleDesc;
 
     /**
      * Aggregate constructor
@@ -15,7 +23,14 @@ public class StringAggregator implements Aggregator {
      */
 
     public StringAggregator(int gbfield, Type gbfieldtype, int afield, Op what) {
-        // some code goes here
+    	if (what != Op.COUNT) throw new IllegalArgumentException("op shoudl be COUNT");
+    	count = new HashMap<Field, Integer>();
+    	this.gbfield = gbfield;
+    	if (gbfield == NO_GROUPING) {
+    		tupleDesc = new TupleDesc(new Type[] {Type.INT_TYPE});
+    	} else {
+    		tupleDesc = new TupleDesc(new Type[] {gbfieldtype, Type.INT_TYPE});
+    	}
     }
 
     /**
@@ -23,7 +38,12 @@ public class StringAggregator implements Aggregator {
      * @param tup the Tuple containing an aggregate field and a group-by field
      */
     public void merge(Tuple tup) {
-        // some code goes here
+    	Field fieldByGroup = gbfield == NO_GROUPING ? null : tup.getField(gbfield);
+    	if (count.containsKey(fieldByGroup)) {
+    		count.put(fieldByGroup, count.get(fieldByGroup) + 1);
+    	} else {
+    		count.put(fieldByGroup, 1);
+    	}
     }
 
     /**
@@ -35,8 +55,46 @@ public class StringAggregator implements Aggregator {
      *   aggregate specified in the constructor.
      */
     public DbIterator iterator() {
-        // some code goes here
-        throw new UnsupportedOperationException("implement me");
+    	return new TupleIterator();
     }
+    
+    class TupleIterator implements DbIterator {
+    	Iterator<Map.Entry<Field, Integer>> iterator;
 
+		@Override
+		public void open() throws DbException, TransactionAbortedException {
+			iterator = count.entrySet().iterator();
+		}
+
+		@Override
+		public boolean hasNext() throws DbException, TransactionAbortedException {
+			return iterator != null && iterator.hasNext();
+		}
+
+		@Override
+		public Tuple next() throws DbException, TransactionAbortedException, NoSuchElementException {
+			if (iterator == null || !iterator.hasNext()) throw new NoSuchElementException("No more elements");
+			Map.Entry<Field, Integer> entry = iterator.next();
+			int aggregateFieldOrder = gbfield == NO_GROUPING ? 0 : 1;
+			Tuple tuple = new Tuple(tupleDesc);
+			tuple.setField(aggregateFieldOrder, new IntField(entry.getValue()));
+		    if (gbfield != NO_GROUPING)	tuple.setField(0, entry.getKey());
+		    return tuple;
+		}
+
+		@Override
+		public void rewind() throws DbException, TransactionAbortedException {
+			iterator = count.entrySet().iterator();
+		}
+
+		@Override
+		public void close() {
+			iterator = null;
+		}
+
+		@Override
+		public TupleDesc getTupleDesc() {
+			return tupleDesc;
+		}
+    }
 }

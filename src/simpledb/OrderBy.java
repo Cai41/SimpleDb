@@ -69,7 +69,7 @@ public class OrderBy extends AbstractDbIterator {
 
      public TupleComparator(int field, boolean asc) {
          this.field = field;
-     this.asc = asc;
+         this.asc = asc;
      }
 
      public int compare(Tuple o1, Tuple o2) {

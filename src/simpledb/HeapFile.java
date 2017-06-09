@@ -137,7 +137,7 @@ public class HeapFile implements DbFile {
 				HeapPage page = (HeapPage) pool.getPage(new TransactionId(), 
 						new HeapPageId(getId(), pageIndex++), 
 						Permissions.READ_WRITE);
-				iterator = page.iterator();				
+				iterator = page.iterator();
 			}
 			return iterator != null && iterator.hasNext();
 		}

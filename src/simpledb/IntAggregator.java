@@ -1,9 +1,20 @@
 package simpledb;
 
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.NoSuchElementException;
+
 /**
  * Knows how to compute some aggregate over a set of IntFields.
  */
 public class IntAggregator implements Aggregator {
+	private final Map<Field, Integer> map;
+	private final Map<Field, Integer> count;
+	private final int gbfield;
+	private final int afield;
+	private final Op op;
+	private final TupleDesc tupleDesc;
 
     /**
      * Aggregate constructor
@@ -14,7 +25,16 @@ public class IntAggregator implements Aggregator {
      */
 
     public IntAggregator(int gbfield, Type gbfieldtype, int afield, Op what) {
-        // some code goes here
+    	map = new HashMap<Field, Integer>();
+    	count = new HashMap<Field, Integer>();
+    	this.gbfield = gbfield;
+    	this.afield = afield;
+    	this.op = what;
+    	if (gbfield == NO_GROUPING) {
+    		tupleDesc = new TupleDesc(new Type[] {Type.INT_TYPE});
+    	} else {
+    		tupleDesc = new TupleDesc(new Type[] {gbfieldtype, Type.INT_TYPE});
+    	}
     }
 
     /**
@@ -22,7 +42,29 @@ public class IntAggregator implements Aggregator {
      * @param tup the Tuple containing an aggregate field and a group-by field
      */
     public void merge(Tuple tup) {
-        // some code goes here
+    	Field fieldByGroup = gbfield == NO_GROUPING ? null : tup.getField(gbfield);
+    	int valueOfAggregateField = ((IntField)tup.getField(afield)).getValue();
+    	if (map.containsKey(fieldByGroup)) { 
+    		count.put(fieldByGroup, count.get(fieldByGroup) + 1);
+    	    int aggregateValue = map.get(fieldByGroup);
+    	    switch (op) {
+			case MIN:
+				map.put(fieldByGroup, Math.min(aggregateValue, valueOfAggregateField));
+				break;
+			case MAX:
+				map.put(fieldByGroup, Math.max(aggregateValue, valueOfAggregateField));
+				break;
+			case SUM:
+			case AVG:
+				map.put(fieldByGroup, aggregateValue + valueOfAggregateField);
+				break;
+			default:
+				break;
+			}
+    	} else {
+    		map.put(fieldByGroup, valueOfAggregateField);
+    		count.put(fieldByGroup, 1);
+    	}
     }
 
     /**
@@ -34,8 +76,62 @@ public class IntAggregator implements Aggregator {
      *   aggregate specified in the constructor.
      */
     public DbIterator iterator() {
-        // some code goes here
-        throw new UnsupportedOperationException("implement me");
+    	return new TupleIterator();
     }
+    
+    class TupleIterator implements DbIterator {
+    	private Iterator<Map.Entry<Field, Integer>> iterator;
 
+		@Override
+		public void open() throws DbException, TransactionAbortedException {
+			iterator = map.entrySet().iterator();
+		}
+
+		@Override
+		public boolean hasNext() throws DbException, TransactionAbortedException {
+			return iterator != null && iterator.hasNext();
+		}
+
+		@Override
+		public Tuple next() throws DbException, TransactionAbortedException, NoSuchElementException {
+			if (iterator == null || !iterator.hasNext()) throw new NoSuchElementException("No more elements.");
+			Map.Entry<Field, Integer> entry = iterator.next();
+			int aggregateFieldOrder = gbfield == NO_GROUPING ? 0 : 1;
+			Tuple tuple = new Tuple(tupleDesc);
+			switch (op) {
+			case MIN:
+			case MAX:
+			case SUM:
+				tuple.setField(aggregateFieldOrder, new IntField(entry.getValue()));
+				break;
+			case AVG:
+				tuple.setField(aggregateFieldOrder, new IntField(entry.getValue() / count.get(entry.getKey())));
+				break;	
+			case COUNT:
+				tuple.setField(aggregateFieldOrder, new IntField(count.get(entry.getKey())));
+				break;
+			default:
+				break;
+			}
+			if (gbfield != NO_GROUPING) {
+				tuple.setField(0, entry.getKey());
+			}
+			return tuple;
+		}
+
+		@Override
+		public void rewind() throws DbException, TransactionAbortedException {
+			iterator = map.entrySet().iterator();
+		}
+
+		@Override
+		public TupleDesc getTupleDesc() {
+			return tupleDesc;
+		}
+
+		@Override
+		public void close() {
+			iterator = null;
+		}
+    }
 }
