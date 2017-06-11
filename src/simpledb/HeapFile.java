@@ -59,6 +59,7 @@ public class HeapFile implements DbFile {
 
     // see DbFile.java for javadocs
     public Page readPage(PageId pid) {
+    	if (pid.getTableId() != getId()) throw new IllegalArgumentException();
         int pgNo = pid.pageno();
         long pgOffset = pgNo * BufferPool.PAGE_SIZE;
         HeapPage heapPage = null;
@@ -96,17 +97,36 @@ public class HeapFile implements DbFile {
     // see DbFile.java for javadocs
     public ArrayList<Page> addTuple(TransactionId tid, Tuple t)
         throws DbException, IOException, TransactionAbortedException {
-        // some code goes here
-        return null;
-        // not necessary for lab1
+    	int numPages = numPages();
+    	BufferPool bufferPool = Database.getBufferPool();
+    	ArrayList<Page> list = new ArrayList<Page>();
+    	int index = 0;
+    	HeapPage page = null;
+    	while (index < numPages) {
+    		page = (HeapPage)bufferPool.getPage(tid, new HeapPageId(getId(), index), Permissions.READ_WRITE);
+    		if (page.getNumEmptySlots() > 0) break;
+    		else index++;
+    	}
+    	if (index == numPages) {
+    		FileWriter fw = new FileWriter(file.getAbsoluteFile(), true);
+    		BufferedWriter bw = new BufferedWriter(fw);
+    		for (int i = 0; i < BufferPool.PAGE_SIZE; i++) bw.write(0);
+    		bw.close();
+    		fw.close();
+    		page = (HeapPage)bufferPool.getPage(tid, new HeapPageId(getId(), numPages), Permissions.READ_WRITE);
+    	}
+    	page.addTuple(t);
+    	list.add(page);
+    	return list;
     }
 
     // see DbFile.java for javadocs
     public Page deleteTuple(TransactionId tid, Tuple t)
         throws DbException, TransactionAbortedException {
-        // some code goes here
-        return null;
-        // not necessary for lab1
+    	PageId pid = t.getRecordId().getPageId();
+    	HeapPage page = (HeapPage)Database.getBufferPool().getPage(tid, pid, Permissions.READ_WRITE);
+    	page.deleteTuple(t);
+        return page;
     }
 
     // see DbFile.java for javadocs

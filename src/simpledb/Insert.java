@@ -6,6 +6,12 @@ import java.util.*;
  * the tableid specified in the constructor
  */
 public class Insert extends AbstractDbIterator {
+	private static final TupleDesc TUPLE_DESC = new TupleDesc(new Type[]{Type.INT_TYPE});
+	
+	private final DbIterator child;
+	private final TransactionId tid;
+	private final int tableId;
+	private Tuple result;
 
     /**
      * Constructor.
@@ -16,24 +22,28 @@ public class Insert extends AbstractDbIterator {
      */
     public Insert(TransactionId t, DbIterator child, int tableid)
         throws DbException {
-        // some code goes here
+    	this.child = child;
+    	this.tid = t;
+    	this.tableId = tableid;
+    	this.result = null;
+    	DbFile dbFile = Database.getCatalog().getDbFile(tableid);
+    	if (!child.getTupleDesc().equals(dbFile.getTupleDesc())) throw new DbException("TupleDesc do not match");
     }
 
     public TupleDesc getTupleDesc() {
-        // some code goes here
-        return null;
+        return TUPLE_DESC;
     }
 
     public void open() throws DbException, TransactionAbortedException {
-        // some code goes here
+    	child.open();
     }
 
     public void close() {
-        // some code goes here
+    	child.close();
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
-        // some code goes here
+    	child.rewind();
     }
 
     /**
@@ -51,7 +61,19 @@ public class Insert extends AbstractDbIterator {
      */
     protected Tuple readNext()
             throws TransactionAbortedException, DbException {
-        // some code goes here
-        return null;
+    	if (result != null) return null;
+    	BufferPool bufferPool = Database.getBufferPool();
+    	int total = 0;
+    	try {
+    		while (child.hasNext()) {
+    			bufferPool.insertTuple(tid, tableId, child.next());
+    			total++;
+    		}
+    	} catch (Exception e) {
+    		throw new DbException("Exception caught.");
+    	}
+        result = new Tuple(TUPLE_DESC);
+        result.setField(0, new IntField(total));
+        return result;
     }
 }
