@@ -22,7 +22,8 @@ public class BufferPool {
     constructor instead. */
     public static final int DEFAULT_PAGES = 50;
     
-    private final Map<PageId, Page> idToPage;
+    private final Map<PageId, Node> idToPage;
+    private final DoubleLinkedList dList;
     private final int numPages;
 
     /**
@@ -31,7 +32,8 @@ public class BufferPool {
      * @param numPages maximum number of pages in this buffer pool.
      */
     public BufferPool(int numPages) {
-        idToPage = new ConcurrentHashMap<PageId, Page>();
+        this.idToPage = new ConcurrentHashMap<PageId, Node>();
+        this.dList = new DoubleLinkedList();
         this.numPages = numPages;
     }
 
@@ -53,15 +55,18 @@ public class BufferPool {
     public  Page getPage(TransactionId tid, PageId pid, Permissions perm)
         throws TransactionAbortedException, DbException {
         if (idToPage.containsKey(pid)) {
-        	return idToPage.get(pid);
+        	Node n = idToPage.get(pid);
+        	dList.removeNode(n);
+        	dList.insertToHead(n);
+        	return n.page;
         }
-        if (idToPage.size() < numPages) {
-        	DbFile dbfile = Database.getCatalog().getDbFile(pid.getTableId());
-        	Page page = dbfile.readPage(pid);
-        	idToPage.put(pid, page);
-        	return page;
-        }
-        throw new DbException("more than numPages: " + numPages + " is requested");
+        if (idToPage.size() == numPages) evictPage();
+       	DbFile dbfile = Database.getCatalog().getDbFile(pid.getTableId());
+       	Page page = dbfile.readPage(pid);
+       	Node n = new Node(pid, page);
+       	idToPage.put(pid, n);
+       	dList.insertToHead(n);
+       	return page;
     }
 
     /**
@@ -129,7 +134,7 @@ public class BufferPool {
     	ArrayList<Page> list = dbFile.addTuple(tid, t);
     	for (Page page : list) {
     		page.markDirty(true, tid);
-    		if (idToPage.containsKey(page.getId())) idToPage.put(page.getId(), page);
+    		getPage(tid, page.getId(), Permissions.READ_WRITE);
     	}
     }
 
@@ -153,6 +158,7 @@ public class BufferPool {
     	DbFile dbFile = catalog.getDbFile(pid.getTableId());
     	Page page = dbFile.deleteTuple(tid, t);
     	page.markDirty(true, tid);
+    	getPage(tid, page.getId(), Permissions.READ_WRITE);
     }
 
     /**
@@ -161,9 +167,9 @@ public class BufferPool {
      *     break simpledb if running in NO STEAL mode.
      */
     public synchronized void flushAllPages() throws IOException {
-        // some code goes here
-        // not necessary for lab1
-
+    	for (Node n : idToPage.values()) {
+    		if (n.page.isDirty() != null) flushPage(n.pid);
+    	}
     }
 
     /** Remove the specific page id from the buffer pool.
@@ -181,8 +187,10 @@ public class BufferPool {
      * @param pid an ID indicating the page to flush
      */
     private synchronized  void flushPage(PageId pid) throws IOException {
-        // some code goes here
-        // not necessary for lab1
+    	DbFile dbFile = Database.getCatalog().getDbFile(pid.getTableId());
+    	Page page = idToPage.get(pid).page;
+    	dbFile.writePage(page);
+    	page.markDirty(false, new TransactionId());
     }
 
     /** Write all pages of the specified transaction to disk.
@@ -197,8 +205,57 @@ public class BufferPool {
      * Flushes the page to disk to ensure dirty pages are updated on disk.
      */
     private synchronized  void evictPage() throws DbException {
-        // some code goes here
-        // not necessary for lab1
+        Node n = dList.removeFromTail();
+       	idToPage.remove(n.pid);
+       	if (n.page.isDirty() != null)
+			try {
+				flushPage(n.pid);
+			} catch (IOException e) {
+				throw new DbException("flush failed, PageId: " + n.pid);
+			}
+    }
+    
+    class Node {
+    	PageId pid;
+    	Page page;
+    	Node prev, next;
+    	
+    	public Node (PageId pid, Page page) {
+    		this.page = page;
+    		this.pid = pid;
+    	}
+    }
+    
+    class DoubleLinkedList {
+    	private final Node head, tail;
+    	
+    	public DoubleLinkedList() {
+    		head = new Node(null, null);
+    		tail = new Node(null, null);
+    		head.next = tail;
+    		tail.prev = head;
+    	}
+    	
+    	public void removeNode(Node n) {
+    	    if (n == head || n == tail) return;
+    		n.prev.next = n.next;
+    		n.next.prev = n.prev;
+    	}
+    	
+    	public void insertToHead(Node n) {
+    		n.next = head.next;
+    		n.next.prev = n;
+    		head.next = n;
+    		n.prev = head;
+    	}
+    	
+    	public Node removeFromTail() {
+    		Node n = tail.prev;
+    		if (n == head) return null;
+    		tail.prev = n.prev;
+    		tail.prev.next = tail;
+    		return n;
+    	}
     }
 
 }
