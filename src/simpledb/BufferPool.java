@@ -129,8 +129,7 @@ public class BufferPool {
      */
     public  void insertTuple(TransactionId tid, int tableId, Tuple t)
         throws DbException, IOException, TransactionAbortedException {
-    	Catalog catalog = Database.getCatalog();
-    	DbFile dbFile = catalog.getDbFile(tableId);
+    	DbFile dbFile = Database.getCatalog().getDbFile(tableId);
     	ArrayList<Page> list = dbFile.addTuple(tid, t);
     	for (Page page : list) {
     		page.markDirty(true, tid);
@@ -154,8 +153,7 @@ public class BufferPool {
     public  void deleteTuple(TransactionId tid, Tuple t)
         throws DbException, TransactionAbortedException {
     	PageId pid = t.getRecordId().getPageId();
-    	Catalog catalog = Database.getCatalog();
-    	DbFile dbFile = catalog.getDbFile(pid.getTableId());
+    	DbFile dbFile = Database.getCatalog().getDbFile(pid.getTableId());
     	Page page = dbFile.deleteTuple(tid, t);
     	page.markDirty(true, tid);
     	getPage(tid, page.getId(), Permissions.READ_WRITE);

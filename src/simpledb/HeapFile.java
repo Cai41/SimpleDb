@@ -16,6 +16,7 @@ import java.util.*;
 public class HeapFile implements DbFile {
 	private final File file;
 	private final TupleDesc tupleDesc;
+	private final int Id;
 
     /**
      * Constructs a heap file backed by the specified file.
@@ -25,6 +26,7 @@ public class HeapFile implements DbFile {
     public HeapFile(File f, TupleDesc td) {
         this.file = f;
         this.tupleDesc = td;
+        this.Id = file.getAbsoluteFile().hashCode();
     }
 
     /**
@@ -46,7 +48,7 @@ public class HeapFile implements DbFile {
     * @return an ID uniquely identifying this HeapFile.
     */
     public int getId() {
-        return file.getAbsoluteFile().hashCode();
+        return Id;
     }
     
     /**
@@ -67,9 +69,7 @@ public class HeapFile implements DbFile {
 			RandomAccessFile raf = new RandomAccessFile(file, "rw");
 			raf.seek(pgOffset);
 			byte[] data = new byte[BufferPool.PAGE_SIZE];
-			for (int i = 0; i < BufferPool.PAGE_SIZE; i++) {
-				data[i] = raf.readByte();
-			}
+			raf.read(data);
 			HeapPageId id = new HeapPageId(pid.getTableId(), pid.pageno());
 			heapPage = new HeapPage(id, data);
 			raf.close();
@@ -135,7 +135,7 @@ public class HeapFile implements DbFile {
 
     // see DbFile.java for javadocs
     public DbFileIterator iterator(TransactionId tid) {
-        return new HeapFileIterator();
+        return new HeapFileIterator(tid);
     }
     
     class HeapFileIterator implements DbFileIterator {
@@ -143,11 +143,13 @@ public class HeapFile implements DbFile {
     	private Iterator<Tuple> iterator = null;
     	private int numPages = 0;
     	private final BufferPool pool;
+    	private final TransactionId tid;
     	
-    	public HeapFileIterator() {
+    	public HeapFileIterator(TransactionId tid) {
     		numPages = numPages();
     		pageIndex = numPages;
     		pool = Database.getBufferPool();
+    		this.tid = tid;
     	}
     	
 		@Override
@@ -158,7 +160,7 @@ public class HeapFile implements DbFile {
 		@Override
 		public boolean hasNext() throws DbException, TransactionAbortedException {
 			while ((iterator == null || !iterator.hasNext()) && pageIndex < numPages) {
-				HeapPage page = (HeapPage) pool.getPage(new TransactionId(), 
+				HeapPage page = (HeapPage) pool.getPage(tid, 
 						new HeapPageId(getId(), pageIndex++), 
 						Permissions.READ_WRITE);
 				iterator = page.iterator();
@@ -187,7 +189,7 @@ public class HeapFile implements DbFile {
 		
 		private void reset() throws TransactionAbortedException, DbException {
 			pageIndex = 0;
-			HeapPage page = (HeapPage) pool.getPage(new TransactionId(), 
+			HeapPage page = (HeapPage) pool.getPage(tid, 
 					new HeapPageId(getId(), pageIndex++), 
 					Permissions.READ_WRITE);
 			iterator = page.iterator();

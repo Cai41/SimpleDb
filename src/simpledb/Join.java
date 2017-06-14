@@ -9,9 +9,16 @@ public class Join extends AbstractDbIterator {
 	private final DbIterator dbIterator1;
 	private final DbIterator dbIterator2;
 	private final TupleDesc tupleDesc;
-	private Tuple tuple1;
+	
 	private Tuple tuple2;
-
+	
+	// used for general join
+	private Tuple tuple1;
+	
+	// used for equi join
+	private final Map<Field, List<Tuple>> map;
+	private Iterator<Tuple> listIterator;
+	
     /**
      * Constructor.  Accepts to children to join and the predicate
      * to join them on
@@ -25,6 +32,7 @@ public class Join extends AbstractDbIterator {
     	this.dbIterator1 = child1;
     	this.dbIterator2 = child2;
     	this.tupleDesc = TupleDesc.combine(child1.getTupleDesc(), child2.getTupleDesc());
+    	this.map = new HashMap<Field, List<Tuple>>();
     }
 
     /**
@@ -38,8 +46,22 @@ public class Join extends AbstractDbIterator {
         throws DbException, NoSuchElementException, TransactionAbortedException {
     	dbIterator1.open();
     	dbIterator2.open();
-    	if (dbIterator1.hasNext()) tuple1 = dbIterator1.next();
     	if (dbIterator2.hasNext()) tuple2 = dbIterator2.next();
+    	if (joinPredicate.getOp().equals(Predicate.Op.EQUALS)) {
+    		while (dbIterator1.hasNext()) {
+        		tuple1 = dbIterator1.next();
+        		Field field1 = tuple1.getField(joinPredicate.getField1());
+        		if (!map.containsKey(field1)) map.put(field1, new ArrayList<Tuple>());
+        		map.get(field1).add(tuple1);
+        	}
+        	dbIterator1.close();
+        	if (tuple2 != null) {
+        		List<Tuple> list = map.get(tuple2.getField(joinPredicate.getField2()));
+    			if (list != null) listIterator = list.iterator();
+        	}
+    	} else {
+    		if (dbIterator1.hasNext()) tuple1 = dbIterator1.next();
+    	}
     }
 
     public void close() {
@@ -48,13 +70,22 @@ public class Join extends AbstractDbIterator {
     	dbIterator2.close();
     	tuple1 = null;
     	tuple2 = null;
+    	listIterator = null;
+    	map.clear();
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
-    	dbIterator1.rewind();
     	dbIterator2.rewind();
-    	if (dbIterator1.hasNext()) tuple1 = dbIterator1.next();
     	if (dbIterator2.hasNext()) tuple2 = dbIterator2.next();
+    	if (joinPredicate.getOp().equals(Predicate.Op.EQUALS)) {
+    		if (tuple2 != null) {
+    			List<Tuple> list = map.get(tuple2.getField(joinPredicate.getField2()));
+    			if (list != null) listIterator = list.iterator();
+    		}
+    	} else {
+    		dbIterator1.rewind();
+    		if (dbIterator1.hasNext()) tuple1 = dbIterator1.next();
+    	}
     }
 
     /**
@@ -77,20 +108,15 @@ public class Join extends AbstractDbIterator {
      * @see JoinPredicate#filter
      */
     protected Tuple readNext() throws TransactionAbortedException, DbException {
+    	if (joinPredicate.getOp().equals(Predicate.Op.EQUALS)) return equiReadNext();
+    	else return generalReadNext();
+    }
+    
+    private Tuple generalReadNext() throws TransactionAbortedException, DbException {
     	if (tuple1 == null || tuple2 == null) return null;
     	Tuple tuple = null;
     	while (tuple == null && tuple1 != null && tuple2 != null) {
-    		if (joinPredicate.filter(tuple1, tuple2)) {
-    			tuple = new Tuple(tupleDesc);
-    		    int tuple1NumFileds = tuple1.getTupleDesc().numFields();
-    		    int tuple2NumFields = tuple2.getTupleDesc().numFields();
-    		    for (int i = 0; i < tuple1NumFileds; i++) {
-    		    	tuple.setField(i, tuple1.getField(i));
-    		    }
-    		    for (int i = 0; i < tuple2NumFields; i++) {
-    		    	tuple.setField(tuple1NumFileds + i, tuple2.getField(i));
-    		    }
-    		}
+    		if (joinPredicate.filter(tuple1, tuple2)) tuple = combineTupe(tuple1, tuple2);
     		if (!dbIterator1.hasNext() && !dbIterator2.hasNext()) {
     			tuple1 = null;
     			tuple2 = null;
@@ -102,6 +128,31 @@ public class Join extends AbstractDbIterator {
     			tuple2 = dbIterator2.next();
     		}
     	}
-    	return tuple;
+    	return tuple;    	
+    }
+    
+    private Tuple equiReadNext() throws TransactionAbortedException, DbException {
+    	if (tuple2 == null) return null;
+    	while ((listIterator == null || !listIterator.hasNext()) && dbIterator2.hasNext()) {
+    		tuple2 = dbIterator2.next();
+    		List<Tuple> list = map.get(tuple2.getField(joinPredicate.getField2()));
+    		if (list != null) listIterator = list.iterator();
+    	}
+    	if (listIterator == null || !listIterator.hasNext()) return null;
+    	tuple1 = listIterator.next();
+	    return combineTupe(tuple1, tuple2);    	
+    }
+    
+    private Tuple combineTupe(Tuple t1, Tuple t2) {
+    	Tuple tuple = new Tuple(tupleDesc);
+	    int tuple1NumFileds = t1.getTupleDesc().numFields();
+	    int tuple2NumFields = t2.getTupleDesc().numFields();
+	    for (int i = 0; i < tuple1NumFileds; i++) {
+	    	tuple.setField(i, t1.getField(i));
+	    }
+	    for (int i = 0; i < tuple2NumFields; i++) {
+	    	tuple.setField(tuple1NumFileds + i, t2.getField(i));
+	    }
+	    return tuple;      	
     }
 }

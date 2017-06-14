@@ -33,4 +33,18 @@ public class JoinPredicate {
     public boolean filter(Tuple t1, Tuple t2) {
         return t1.getField(field1).compare(op, t2.getField(field2));
     }
+
+	public int getField1() {
+		return field1;
+	}
+
+	public int getField2() {
+		return field2;
+	}
+
+	public Predicate.Op getOp() {
+		return op;
+	}
+    
+    
 }
