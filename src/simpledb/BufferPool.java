@@ -1,9 +1,18 @@
 package simpledb;
 
 import java.io.*;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * BufferPool manages the reading and writing of pages into memory from
  * disk. Access methods call into it to retrieve pages, and it fetches
@@ -25,6 +34,207 @@ public class BufferPool {
     private final Map<PageId, Node> idToPage;
     private final DoubleLinkedList dList;
     private final int numPages;
+    
+    private final LockManager lockManager;
+    
+    public class LockManager {
+    	static final int LOCK_WAIT = 10;
+
+    	final Map<PageId, Permissions> page2perm;
+    	final Map<PageId, Set<TransactionId>> page2tids;
+    	final Map<TransactionId, Set<PageId>> tid2pages;
+    	final Map<TransactionId, Vector<TransactionId>> waitsFor;
+    	
+    	/**
+    	 * Sets up the lock manager to keep track of page-level locks for transactions
+    	 * Should initialize state required for the lock table data structure(s)
+    	 */
+    	private LockManager() {
+    		page2perm = new HashMap<PageId, Permissions>();
+    		page2tids = new HashMap<PageId, Set<TransactionId>>();
+    		tid2pages = new HashMap<TransactionId, Set<PageId>>();
+    		waitsFor = new HashMap<TransactionId, Vector<TransactionId>>();
+    	}
+    	
+    	public boolean checkWaitsForDeadlock(TransactionId tid) {
+    		if (!waitsFor.containsKey(tid)) return false;
+    		Deque<TransactionId> stack = new ArrayDeque<TransactionId>();
+    		for (TransactionId t : waitsFor.get(tid)) if (!t.equals(tid)) stack.push(tid);
+    		while (!stack.isEmpty()) {
+    			Vector<TransactionId> trans = null;
+    			if ((trans = waitsFor.get(stack.pop())) == null || trans.size() == 0) continue;
+    			for (TransactionId t : trans) {
+    				if (t.equals(tid)) return true;
+    				stack.push(t);
+    			}
+    		}
+    		return false;
+    	}
+    	    	
+    	/**
+    	 * Tries to acquire a lock on page pid for transaction tid, with permissions perm. 
+    	 * If cannot acquire the lock, waits for a timeout period, then tries again. 
+    	 * This method does not return until the lock is granted, or an exception is thrown
+    	 *
+    	 * In Exercise 5, checking for deadlock will be added in this method
+    	 * Note that a transaction should throw a DeadlockException in this method to 
+    	 * signal that it should be aborted.
+    	 *
+    	 * @throws DeadlockException after on cycle-based deadlock
+    	 */
+    	public boolean acquireLock(TransactionId tid, PageId pid, Permissions perm)
+    	    throws DeadlockException {
+    	    
+    	    while(!lock(tid, pid, perm)) { // keep trying to get the lock
+    		
+    	    	synchronized(this) {
+    	    		// you don't have the lock yet, deadlock detection
+    	    		if (checkWaitsForDeadlock(tid)) throw new DeadlockException();
+    	    	}
+    		
+    	    	try {
+    	    		// couldn't get lock, wait for some time, then try again
+    	    		Thread.sleep(LOCK_WAIT); 
+    	    	} catch (InterruptedException e) { // do nothing
+    	    	}
+    	    }
+    	    	    
+    	    synchronized(this) {
+    	    	waitsFor.remove(tid);
+    	    }
+    	    
+    	    return true;
+    	}
+    	
+    	/**
+    	 * Release all locks corresponding to TransactionId tid.
+    	 * This method is used by BufferPool.transactionComplete()
+    	 */
+		public synchronized void releaseAllLocks(TransactionId tid) {
+			Set<PageId> pages = tid2pages.remove(tid);
+			if (pages == null)
+				return;
+			for (PageId pid : pages) {
+				Set<TransactionId> trans = null;
+				if ((trans = page2tids.get(pid)) != null) {
+					trans.remove(tid);
+					if (trans.size() == 0) {
+						page2perm.remove(pid);
+						page2tids.remove(pid);
+					}
+				}
+			}
+			waitsFor.remove(tid);
+			for (Vector<TransactionId> trans : waitsFor.values()) trans.remove(tid);
+		}
+    	
+    	public synchronized Set<PageId> pagesLockedByTid(TransactionId tid) {
+    		Set<PageId> set = null;
+    		return (set = tid2pages.get(tid)) == null ? new HashSet<PageId>() : set;
+    	}
+    	
+    	/** Return true if the specified transaction has a lock on the specified page */
+    	public synchronized boolean holdsLock(TransactionId tid, PageId p) {
+    		Set<PageId> pages = null;
+    	    return (pages = tid2pages.get(tid)) != null && pages.contains(p);
+    	}
+    	
+    	/**
+    	 * Answers the question: is this transaction "locked out" of acquiring lock on this page with this perm?
+    	 * Returns false if this tid/pid/perm lock combo can be achieved (i.e., not locked out), true otherwise.
+    	 * 
+    	 * Logic:
+    	 *
+    	 * if perm == READ_ONLY
+    	 *  if tid is holding any sort of lock on pid, then the tid can acquire the lock (return false).
+    	 *
+    	 *  if another tid is holding a READ lock on pid, then the tid can acquire the lock (return false).
+    	 *  if another tid is holding a WRITE lock on pid, then tid can not currently 
+    	 *  acquire the lock (return true).
+    	 *
+    	 * else
+    	 *   if tid is THE ONLY ONE holding a READ lock on pid, then tid can acquire the lock (return false).
+    	 *   if tid is holding a WRITE lock on pid, then the tid already has the lock (return false).
+    	 *
+    	 *   if another tid is holding any sort of lock on pid, then the tid cannot currenty acquire the lock (return true).
+    	 */
+    	private synchronized boolean locked(TransactionId tid, PageId pid, Permissions perm) {
+    	    if (perm.equals(Permissions.READ_ONLY)) {
+        		Set<PageId> pages = null;
+        		Permissions permission = null;
+    	    	if ((pages = tid2pages.get(tid)) != null && pages.contains(pid)) return false;
+    	    	if ((permission = page2perm.get(pid)) != null) {
+    	    		if (permission.equals(Permissions.READ_ONLY)) return false;
+    	    		if (!waitsFor.containsKey(tid)) waitsFor.put(tid, new Vector<TransactionId>());
+    	    		waitsFor.get(tid).addAll(page2tids.get(pid));
+    	    		return true;
+    	    	}
+    	    	return false;
+    	    } else {
+    	    	Set<TransactionId> trans = null;
+    	    	if ((trans = page2tids.get(pid)) != null && trans.size() > 0) {
+    	    		if (trans.size() == 1 && trans.contains(tid)) return false;
+    	    		if (!waitsFor.containsKey(tid)) waitsFor.put(tid, new Vector<TransactionId>());
+    	    		waitsFor.get(tid).addAll(trans);
+    	    		return true;
+    	    	}
+    	    	return false;
+    	    }    	    
+    	}
+    	
+    	
+    	/**
+    	 * Releases whatever lock this transaction has on this page
+    	 * Should update lock table data structure(s)
+    	 *
+    	 * Note that you do not need to "wake up" another transaction that is waiting for a lock on this page,
+    	 * since that transaction will be "sleeping" and will wake up and check if the page is available on its own
+    	 * However, if you decide to change the fact that a thread is sleeping in acquireLock(), you would have to wake it up here
+    	 */
+    	public synchronized void releaseLock(TransactionId tid, PageId pid) {
+    		Set<PageId> pages = null;
+    		Set<TransactionId> trans = null;
+    		if ((pages = tid2pages.get(tid)) != null) {
+    			pages.remove(pid);
+    			if ((trans = page2tids.get(pid)) != null) {
+    				trans.remove(tid);
+    				if (trans.size() == 0) {
+        				page2perm.remove(pid);
+        				page2tids.remove(pid); 					
+    				}
+    			}
+    		}
+    	}
+
+    	/**
+    	 * Attempt to lock the given PageId with the given Permissions for this TransactionId
+    	 * Should update the lock table data structure(s) if successful
+    	 *
+    	 * Returns true if the lock attempt was successful, false otherwise
+    	 */
+    	private synchronized boolean lock(TransactionId tid, PageId pid, Permissions perm) {
+    	    
+    	    if(locked(tid, pid, perm)) 
+    		return false; // this transaction cannot get the lock on this page; it is "locked out"
+
+    	    // Else, this transaction is able to get the lock, update lock table
+    	    Set<TransactionId> trans;
+    	    Set<PageId> pages;
+    	    page2perm.put(pid, perm);
+    	    if ((trans = page2tids.get(pid)) == null) {
+    	    	trans = new HashSet<TransactionId>();
+    	    	page2tids.put(pid, trans);
+    	    }
+    	    trans.add(tid);
+    	    if ((pages = tid2pages.get(tid)) == null) {
+    	    	pages = new HashSet<PageId>();
+    	    	tid2pages.put(tid, pages);
+    	    }
+    	    pages.add(pid);
+    	    return true;
+    	}
+    }
+
 
     /**
      * Creates a BufferPool that caches up to numPages pages.
@@ -35,6 +245,7 @@ public class BufferPool {
         this.idToPage = new ConcurrentHashMap<PageId, Node>();
         this.dList = new DoubleLinkedList();
         this.numPages = numPages;
+        this.lockManager = new LockManager();
     }
 
     /**
@@ -54,19 +265,25 @@ public class BufferPool {
      */
     public  Page getPage(TransactionId tid, PageId pid, Permissions perm)
         throws TransactionAbortedException, DbException {
-        if (idToPage.containsKey(pid)) {
-        	Node n = idToPage.get(pid);
-        	dList.removeNode(n);
-        	dList.insertToHead(n);
-        	return n.page;
-        }
-        if (idToPage.size() == numPages) evictPage();
-       	DbFile dbfile = Database.getCatalog().getDbFile(pid.getTableId());
-       	Page page = dbfile.readPage(pid);
-       	Node n = new Node(pid, page);
-       	idToPage.put(pid, n);
-       	dList.insertToHead(n);
-       	return page;
+    	try {
+			lockManager.acquireLock(tid, pid, perm);
+		} catch (DeadlockException e) {
+			throw new TransactionAbortedException();
+		}
+    	Node n = null;
+		synchronized (this) {
+			if (idToPage.containsKey(pid)) {
+				n = idToPage.get(pid);
+				dList.removeNode(n);
+				dList.insertToHead(n);
+			} else {
+				if (idToPage.size() == numPages) evictPage();
+				n = new Node(pid, Database.getCatalog().getDbFile(pid.getTableId()).readPage(pid));
+				idToPage.put(pid, n);
+				dList.insertToHead(n);
+			}
+		}
+       	return n.page;
     }
 
     /**
@@ -79,8 +296,7 @@ public class BufferPool {
      * @param pid the ID of the page to unlock
      */
     public  void releasePage(TransactionId tid, PageId pid) {
-        // some code goes here
-        // not necessary for lab1|lab2
+    	lockManager.releaseLock(tid, pid);
     }
 
     /**
@@ -89,15 +305,12 @@ public class BufferPool {
      * @param tid the ID of the transaction requesting the unlock
      */
     public  void transactionComplete(TransactionId tid) throws IOException {
-        // some code goes here
-        // not necessary for lab1|lab2
+    	transactionComplete(tid, true);
     }
 
     /** Return true if the specified transaction has a lock on the specified page */
     public   boolean holdsLock(TransactionId tid, PageId p) {
-        // some code goes here
-        // not necessary for lab1|lab2
-        return false;
+        return lockManager.holdsLock(tid, p);
     }
 
     /**
@@ -109,8 +322,19 @@ public class BufferPool {
      */
     public   void transactionComplete(TransactionId tid, boolean commit)
         throws IOException {
-        // some code goes here
-        // not necessary for lab1|lab2
+    	Set<PageId> pages = lockManager.pagesLockedByTid(tid);
+    	if (commit) {  		
+    		for (PageId pid : pages) flushPage(pid);
+    	} else {
+    		for (PageId pid : pages) {
+    			Node n = null;
+    			if ((n = idToPage.get(pid)) != null){
+    				DbFile dbFile = Database.getCatalog().getDbFile(pid.getTableId());
+    				n.page = dbFile.readPage(pid);
+    			}
+    		}
+    	}
+    	lockManager.releaseAllLocks(tid);
     }
 
     /**
@@ -131,10 +355,12 @@ public class BufferPool {
         throws DbException, IOException, TransactionAbortedException {
     	DbFile dbFile = Database.getCatalog().getDbFile(tableId);
     	ArrayList<Page> list = dbFile.addTuple(tid, t);
-    	for (Page page : list) {
-    		page.markDirty(true, tid);
-    		getPage(tid, page.getId(), Permissions.READ_WRITE);
-    	}
+		synchronized (this) {
+			for (Page page : list) {
+				page.markDirty(true, tid);
+				getPage(tid, page.getId(), Permissions.READ_ONLY);
+			}
+		}
     }
 
     /**
@@ -155,8 +381,10 @@ public class BufferPool {
     	PageId pid = t.getRecordId().getPageId();
     	DbFile dbFile = Database.getCatalog().getDbFile(pid.getTableId());
     	Page page = dbFile.deleteTuple(tid, t);
-    	page.markDirty(true, tid);
-    	getPage(tid, page.getId(), Permissions.READ_WRITE);
+    	synchronized (this) {
+			page.markDirty(true, tid);
+			getPage(tid, page.getId(), Permissions.READ_ONLY);
+    	}
     }
 
     /**
@@ -185,10 +413,11 @@ public class BufferPool {
      * @param pid an ID indicating the page to flush
      */
     private synchronized  void flushPage(PageId pid) throws IOException {
-    	DbFile dbFile = Database.getCatalog().getDbFile(pid.getTableId());
-    	Page page = idToPage.get(pid).page;
-    	dbFile.writePage(page);
-    	page.markDirty(false, new TransactionId());
+    	Node n = idToPage.get(pid);
+    	if (n == null) return;
+    	Page page = n.page;
+    	Database.getCatalog().getDbFile(pid.getTableId()).writePage(page);
+    	page.markDirty(false, null);
     }
 
     /** Write all pages of the specified transaction to disk.
@@ -203,14 +432,21 @@ public class BufferPool {
      * Flushes the page to disk to ensure dirty pages are updated on disk.
      */
     private synchronized  void evictPage() throws DbException {
-        Node n = dList.removeFromTail();
-       	idToPage.remove(n.pid);
-       	if (n.page.isDirty() != null)
-			try {
-				flushPage(n.pid);
-			} catch (IOException e) {
-				throw new DbException("flush failed, PageId: " + n.pid);
-			}
+    	Iterator<Node> iterator = dList.iterator();
+    	while (iterator.hasNext()) {
+    		Node n = iterator.next();
+    		if (n.page.isDirty() == null) {
+    			try {
+					flushPage(n.pid);
+				} catch (IOException e) {
+					throw new DbException("flush failed, PageId: " + n.pid);
+				}
+    			dList.removeNode(n);
+    			idToPage.remove(n.pid);
+    			return;
+    		}
+    	}
+    	throw new DbException("can't find clean page to evict");
     }
     
     class Node {
@@ -253,6 +489,24 @@ public class BufferPool {
     		tail.prev = n.prev;
     		tail.prev.next = tail;
     		return n;
+    	}
+    	
+    	public Iterator<Node> iterator() {
+    		return new Iterator<Node>() {
+    			Node current = tail.prev;
+
+				@Override
+				public boolean hasNext() {
+					return current != head;
+				}
+
+				@Override
+				public Node next() {
+					if (current == head) return null;
+					current = current.prev;
+					return current.next;
+				}
+			};
     	}
     }
 

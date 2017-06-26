@@ -107,9 +107,12 @@ public class HeapFile implements DbFile {
     	int index = 0;
     	HeapPage page = null;
     	while (index < numPages) {
-    		page = (HeapPage)bufferPool.getPage(tid, new HeapPageId(getId(), index), Permissions.READ_WRITE);
+    		page = (HeapPage)bufferPool.getPage(tid, new HeapPageId(getId(), index), Permissions.READ_ONLY);
     		if (page.getNumEmptySlots() > 0) break;
-    		else index++;
+    		else {
+    			index++;
+    			bufferPool.releasePage(tid, page.pid);
+    		}
     	}
     	if (index == numPages) {
     		FileWriter fw = new FileWriter(file.getAbsoluteFile(), true);
@@ -117,8 +120,8 @@ public class HeapFile implements DbFile {
     		for (int i = 0; i < BufferPool.PAGE_SIZE; i++) bw.write(0);
     		bw.close();
     		fw.close();
-    		page = (HeapPage)bufferPool.getPage(tid, new HeapPageId(getId(), numPages), Permissions.READ_WRITE);
     	}
+    	page = (HeapPage)bufferPool.getPage(tid, new HeapPageId(getId(), index), Permissions.READ_WRITE);
     	page.addTuple(t);
     	list.add(page);
     	return list;
