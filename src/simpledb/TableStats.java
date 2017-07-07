@@ -1,5 +1,11 @@
 package simpledb;
 
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
 /** TableStats represents statistics (e.g., histograms) about base tables in a query */
 public class TableStats {
     
@@ -9,6 +15,12 @@ public class TableStats {
      * though our tests assume that you have at least 100 bins in your histograms.
      */
     static final int NUM_HIST_BINS = 100;
+    
+    private final Map<Integer, IntHistogram> intHistograms;
+    private final Map<Integer, StringHistogram> stringHistograms;
+    private final int ioCostPerPage;
+    private final HeapFile table;
+    private int numTuples;
 
     /**
      * Create a new TableStats object, that keeps track of statistics on each column of a table
@@ -22,7 +34,59 @@ public class TableStats {
     	// then scan through its tuples and calculate the values that you need.
     	// You should try to do this reasonably efficiently, but you don't necessarily
     	// have to (for example) do everything in a single scan of the table.
-    	// some code goes here
+    	this.ioCostPerPage = ioCostPerPage;
+    	intHistograms = new HashMap<Integer, IntHistogram>();
+    	stringHistograms = new HashMap<Integer, StringHistogram>();
+    	table = (HeapFile)Database.getCatalog().getDbFile(tableid);
+    	TupleDesc td = table.getTupleDesc();
+    	numTuples = 0;
+    	
+    	int numFields = td.numFields();
+    	Set<Integer> intTypes = new HashSet<Integer>();
+    	for (int i = 0; i < numFields; i++) if (td.getType(i).equals(Type.INT_TYPE)) intTypes.add(i);
+    	
+    	Map<Integer, Integer> mins = new HashMap<Integer, Integer>(), maxs = new HashMap<Integer, Integer>();
+    	Transaction t = new Transaction(); 
+    	t.start();
+    	SeqScan s = new SeqScan(t.getId(), tableid, "t"); 
+    	try {
+			s.open();
+	    	while (s.hasNext()) {
+	    		numTuples++;
+	    		Tuple tuple = s.next();
+	    		for (int i : intTypes) {			
+	    			int val = ((IntField) tuple.getField(i)).getValue();
+	    			if (!mins.containsKey(i)) mins.put(i, val);
+	    			else if (mins.get(i) > val) mins.put(i, val);
+	    			if (!maxs.containsKey(i)) maxs.put(i, val);
+	    			else if (maxs.get(i) < val) maxs.put(i, val);
+	    		}
+	    	}
+	    	for (int i = 0; i < numFields; i++) {
+	    		if (intTypes.contains(i)) {
+	    			intHistograms.put(i, new IntHistogram(NUM_HIST_BINS, mins.get(i), maxs.get(i)));
+	    		} else {
+	    			stringHistograms.put(i, new StringHistogram(NUM_HIST_BINS));
+	    		}
+	    	}
+	    	s.rewind();
+	    	while (s.hasNext()) {
+	    		Tuple tuple = s.next();
+	    		for (int i = 0; i < numFields; i++) {			
+	    			Field f = tuple.getField(i);
+	    			if (intTypes.contains(i)) intHistograms.get(i).addValue(((IntField)f).getValue());
+	    			else stringHistograms.get(i).addValue(((StringField)f).getValue());
+	    		}
+	    	}
+	    	s.close();
+	    	t.commit();
+		} catch (DbException e1) {
+			throw new RuntimeException(e1);
+		} catch (TransactionAbortedException e2) {
+			throw new RuntimeException(e2);
+		} catch (IOException e3) {
+			throw new RuntimeException(e3);
+		}
     }
 
     /** 
@@ -39,8 +103,7 @@ public class TableStats {
      * @return The estimated cost of scanning the table.
      */ 
     public double estimateScanCost() {
-    	// some code goes here
-        return 0;
+        return table.numPages() * ioCostPerPage;
     }
 
     /** 
@@ -52,8 +115,7 @@ public class TableStats {
      * @return The estimated cardinality of the scan with the specified selectivityFactor
      */
     public int estimateTableCardinality(double selectivityFactor) {
-    	// some code goes here
-        return 0;
+        return (int)(numTuples * selectivityFactor);
     }
 
     /** 
@@ -65,8 +127,11 @@ public class TableStats {
      * @return The estimated selectivity (fraction of tuples that satisfy) the predicate
      */
     public double estimateSelectivity(int field, Predicate.Op op, Field constant) {
-    	// some code goes here
-        return 1.0;
+    	if (intHistograms.containsKey(field)) {
+    		return intHistograms.get(field).estimateSelectivity(op, ((IntField)constant).getValue());
+    	} else {
+    		return stringHistograms.get(field).estimateSelectivity(op, ((StringField)constant).getValue());
+    	}
     }
 
 }

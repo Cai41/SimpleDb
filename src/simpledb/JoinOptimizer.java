@@ -88,7 +88,7 @@ public class JoinOptimizer {
             // Insert your code here.
             // HINT:  You may need to use the variable "j" if you implemented a join
             //        algorithm that's more complicated than a basic nested-loops join.
-            return -1.0;
+            return cost1 + card1 * cost2 + card1 * card2;
         }
     }
 
@@ -110,8 +110,15 @@ public class JoinOptimizer {
             // You do not need to implement proper support for these for Lab 4.
             return card1;
         } else {
-            // some code goes here
-            return -1;
+            if (j.p.equals(Predicate.Op.EQUALS) || j.p.equals(Predicate.Op.LIKE)) {
+            	if (t1pkey || t2pkey) {
+            		return t1pkey ? card2 : card1;
+            	} else {
+            		return Math.max(card1, card2);
+            	}
+            } else {
+            	return (int)(card1 * card2 * 0.3);
+            }
         }
     }
 
@@ -165,11 +172,23 @@ public class JoinOptimizer {
                                               HashMap<String, Double> filterSelectivities,  
                                               boolean explain) throws ParsingException 
     {
-        //Not necessary for labs 1--3
 
-        // some code goes here
-        //Replace the following
-        return joins;
+        // See the Lab 4 writeup for some hints as to how this function should work.
+
+    	Set<LogicalJoinNode> j = new HashSet<LogicalJoinNode>(joins);
+    	PlanCache pc = new PlanCache();
+    	for (int i = 1; i <= j.size(); i++) {
+    		Set<Set<LogicalJoinNode>> sets = enumerateSubsets(joins, i);
+    		for (Set<LogicalJoinNode> joinSet : sets) {
+    			CostCard bestCC = null;
+    			for (LogicalJoinNode joinToRemove : joinSet) {
+    				CostCard cc = computeCostAndCardOfSubplan(stats, filterSelectivities, joinToRemove, joinSet, bestCC == null ? Double.MAX_VALUE : bestCC.cost, pc);
+    				if (cc != null) bestCC = cc;
+    			}
+    			if (bestCC != null) pc.addPlan(joinSet, bestCC.cost, bestCC.card, bestCC.plan);
+    		}
+    	}
+        return pc.getOrder(j);
     } 
  
     //===================== Private Methods =================================

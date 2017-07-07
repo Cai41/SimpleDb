@@ -1,10 +1,14 @@
 package simpledb;
 
-import java.util.ArrayList;
-
 /** A class to represent a fixed-width histogram over a single integer-based field.
  */
 public class IntHistogram {
+	private final int[] histogram;
+	private final double min;
+	private final double max;
+	private final double bucketWidth;
+	private int ntuples;
+	private final double max1;
 
     /**
      * Create a new IntHistogram.
@@ -23,7 +27,12 @@ public class IntHistogram {
      * @param max The maximum integer value that will ever be passed to this class for histogramming
      */
     public IntHistogram(int buckets, int min, int max) {
-    	// some code goes here
+    	this.min = min;
+    	this.max = max;
+    	this.histogram = new int[buckets + 2];
+    	this.bucketWidth = Math.ceil(1.0 * (max - min + 1) / buckets);
+    	this.max1 = min + bucketWidth * buckets;
+    	ntuples = 0;
     }
 
     /**
@@ -31,7 +40,10 @@ public class IntHistogram {
      * @param v Value to add to the histogram
      */
     public void addValue(int v) {
-    	// some code goes here
+    	int bucketNo = (int)((v - min + bucketWidth) / bucketWidth);
+    	if (bucketNo == histogram.length - 1) bucketNo--;
+    	histogram[bucketNo]++;
+    	ntuples++;
     }
 
     /**
@@ -45,17 +57,41 @@ public class IntHistogram {
      * @return Predicted selectivity of this particular operator and value
      */
     public double estimateSelectivity(Predicate.Op op, int v) {
-
-    	// some code goes here
-        return -1.0;
+    	double v1 = v;
+    	if (v1 < min) v1 = min - bucketWidth / 2.0;
+    	else if (v1 > max) v1 = max1 + bucketWidth / 2.0;
+    	int bucketNo = (int)((v1 - min + bucketWidth) / bucketWidth);
+    	if (v1 == max && bucketNo == histogram.length - 1) bucketNo--;
+    	double fracEqualToVal = (histogram[bucketNo] / bucketWidth) / ntuples;
+    	if (op.equals(Predicate.Op.EQUALS)) {
+    		return fracEqualToVal;
+    	} else if (op.equals(Predicate.Op.GREATER_THAN) || op.equals(Predicate.Op.GREATER_THAN_OR_EQ)) {
+    		double bucketPart = histogram[bucketNo] == 0.0 ? 0 : ((bucketNo + 1) * bucketWidth - v1) / histogram[bucketNo];
+    		double bucketFraction = histogram[bucketNo] * 1.0 / ntuples;
+    		double f = 0.0;
+    		for (int i = bucketNo + 1; i < histogram.length; i++) f += histogram[i];
+    		f /= ntuples;
+    		f += (bucketPart * bucketFraction);
+    		if (op.equals(Predicate.Op.GREATER_THAN_OR_EQ)) f += fracEqualToVal;
+    		return f;
+    	} else if (op.equals(Predicate.Op.LESS_THAN) || op.equals(Predicate.Op.LESS_THAN_OR_EQ)){
+    		double bucketPart = histogram[bucketNo] == 0 ? 0 : (v1 - bucketNo * bucketWidth) / histogram[bucketNo];
+    		double bucketFraction = histogram[bucketNo] * 1.0 / ntuples;
+    		double f = 0.0;
+    		for (int i = 0; i < bucketNo; i++) f += histogram[i];
+    		f /= ntuples;
+    		f += bucketPart * bucketFraction;
+    		if (op.equals(Predicate.Op.LESS_THAN_OR_EQ)) f += fracEqualToVal;
+    		return f;
+    	} else {
+    		return 1 - (histogram[bucketNo] / bucketWidth) / ntuples;
+    	}
     }
     
     /**
      * @return A string describing this histogram, for debugging purposes
      */
     public String toString() {
-
-        // some code goes here
-        return null;
+        return String.format("min = %d, max = %d, # bucket = ", min, max, histogram.length);
     }
 }
