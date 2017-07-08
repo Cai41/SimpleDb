@@ -48,7 +48,7 @@ public class Transaction {
             }
 
             try {
-
+            	// release locks
                 Database.getBufferPool().transactionComplete(tid, !abort); // release locks
 
             } catch (IOException e) {

@@ -8,7 +8,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Random;
 import java.util.Set;
 import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
@@ -324,7 +323,14 @@ public class BufferPool {
         throws IOException {
     	Set<PageId> pages = lockManager.pagesLockedByTid(tid);
     	if (commit) {  		
-    		for (PageId pid : pages) flushPage(pid);
+    		for (PageId pid : pages) {
+    			flushPage(pid);
+    			// use current page contents as the before-image
+    			// for the next transaction that modifies this page.
+    			Node n = idToPage.get(pid);
+    			if (n == null) continue;
+    	    	n.page.setBeforeImage();
+    		}
     	} else {
     		for (PageId pid : pages) {
     			Node n = null;
@@ -406,6 +412,10 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // only necessary for lab5
+    	Node n = idToPage.get(pid);
+    	if (n == null) return;
+    	dList.removeNode(n);
+    	idToPage.remove(pid);
     }
 
     /**
@@ -416,6 +426,13 @@ public class BufferPool {
     	Node n = idToPage.get(pid);
     	if (n == null) return;
     	Page page = n.page;
+
+    	// append an update record to the log, with
+    	// a before-image and after-image.
+    	TransactionId dirtier = page.isDirty();
+    	if (dirtier == null) return;
+    	Database.getLogFile().logWrite(dirtier, page.getBeforeImage(), page);
+    	Database.getLogFile().force();
     	Database.getCatalog().getDbFile(pid.getTableId()).writePage(page);
     	page.markDirty(false, null);
     }
@@ -423,8 +440,9 @@ public class BufferPool {
     /** Write all pages of the specified transaction to disk.
      */
     public synchronized  void flushPages(TransactionId tid) throws IOException {
-        // some code goes here
-        // not necessary for lab1|lab2|lab3
+    	Set<PageId> pages = lockManager.pagesLockedByTid(tid);
+    	if (pages == null) return;
+    	for (PageId pid : pages) flushPage(pid);
     }
 
     /**

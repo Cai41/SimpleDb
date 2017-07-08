@@ -67,8 +67,8 @@ public class HeapPageId implements PageId {
     public int[] serialize() {
         int data[] = new int[2];
 
-        data[0] = getTableId();
-        data[1] = pageno();
+        data[0] = tableId;
+        data[1] = pgNo;
 
         return data;
     }
